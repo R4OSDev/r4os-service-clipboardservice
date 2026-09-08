@@ -90,18 +90,18 @@ fn handleRequest(ctx: *const r4os.r4sys.Context, handle: u32, state: *ClipboardS
         r4os.abi.clipboard_service_op_revision => handleRevision(ctx, handle, header.request_id, state),
         else => {
             state.bad_ops +%= 1;
-            return ctx.serviceEndpointReply(handle, header.request_id, r4os.abi.service_api_result_bad_op, "BADOP");
+            return r4os.app_services.replyIfPending(ctx.*, handle, header.request_id, r4os.abi.service_api_result_bad_op, "BADOP");
         },
     };
 }
 
 fn handleWrite(ctx: *const r4os.r4sys.Context, handle: u32, request_id: u32, state: *ClipboardState, payload: []const u8) i32 {
     if (payload.len > @as(usize, r4os.clipboard.max_text_bytes)) {
-        return ctx.serviceEndpointReply(handle, request_id, r4os.abi.clipboard_error_too_large, "");
+        return r4os.app_services.replyIfPending(ctx.*, handle, request_id, r4os.abi.clipboard_error_too_large, "");
     }
     var i: usize = 0;
     while (i < payload.len) : (i += 1) {
-        if (payload[i] == 0) return ctx.serviceEndpointReply(handle, request_id, r4os.abi.clipboard_error_invalid, "");
+        if (payload[i] == 0) return r4os.app_services.replyIfPending(ctx.*, handle, request_id, r4os.abi.clipboard_error_invalid, "");
     }
     if (payload.len > 0) @memcpy(state.text[0..payload.len], payload);
     state.text[payload.len] = 0;
@@ -109,32 +109,32 @@ fn handleWrite(ctx: *const r4os.r4sys.Context, handle: u32, request_id: u32, sta
     state.len = payload.len;
     bumpRevision(state);
     state.writes +%= 1;
-    return ctx.serviceEndpointReply(handle, request_id, @intCast(payload.len), "");
+    return r4os.app_services.replyIfPending(ctx.*, handle, request_id, @intCast(payload.len), "");
 }
 
 fn handleRead(ctx: *const r4os.r4sys.Context, handle: u32, request_id: u32, state: *ClipboardState) i32 {
     state.reads +%= 1;
-    return ctx.serviceEndpointReply(handle, request_id, @intCast(state.len), state.text[0..state.len]);
+    return r4os.app_services.replyIfPending(ctx.*, handle, request_id, @intCast(state.len), state.text[0..state.len]);
 }
 
 fn handleInfo(ctx: *const r4os.r4sys.Context, handle: u32, request_id: u32, state: *ClipboardState) i32 {
     state.infos +%= 1;
     var payload: [info_payload_size]u8 = .{0} ** info_payload_size;
     writeInfoPayload(payload[0..], state);
-    return ctx.serviceEndpointReply(handle, request_id, r4os.abi.service_api_result_ok, payload[0..]);
+    return r4os.app_services.replyIfPending(ctx.*, handle, request_id, r4os.abi.service_api_result_ok, payload[0..]);
 }
 
 fn handleClear(ctx: *const r4os.r4sys.Context, handle: u32, request_id: u32, state: *ClipboardState) i32 {
     clearState(state);
     bumpRevision(state);
     state.clears +%= 1;
-    return ctx.serviceEndpointReply(handle, request_id, r4os.abi.service_api_result_ok, "");
+    return r4os.app_services.replyIfPending(ctx.*, handle, request_id, r4os.abi.service_api_result_ok, "");
 }
 
 fn handleRevision(ctx: *const r4os.r4sys.Context, handle: u32, request_id: u32, state: *ClipboardState) i32 {
     var payload: [4]u8 = .{0} ** 4;
     writeLe32(payload[0..], state.revision);
-    return ctx.serviceEndpointReply(handle, request_id, r4os.abi.service_api_result_ok, payload[0..]);
+    return r4os.app_services.replyIfPending(ctx.*, handle, request_id, r4os.abi.service_api_result_ok, payload[0..]);
 }
 
 fn runPing(ctx: *const r4os.r4sys.Context) i32 {
