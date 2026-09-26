@@ -38,3 +38,8 @@ Detailed German technical notes from the migration are preserved in
 Original R4OS material is licensed under Apache License 2.0. See `LICENSE`
 and `NOTICE`. Any repository-specific external material is documented in
 `THIRD_PARTY_NOTICES.md`.
+
+CLIPSVC 0.1.4 declares `runtime.parallel=owned-v1`: its endpoint loop owns
+its clipboard state, while the kernel owns request/reply/stop lifetime.
+The existing `/SELFTEST` also creates and joins a worker that reads service
+metadata over IPC; worker threads inherit the background instance policy.

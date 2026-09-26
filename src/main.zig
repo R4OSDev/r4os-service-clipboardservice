@@ -196,6 +196,15 @@ fn runSelfTest(ctx: *const r4os.r4sys.Context) i32 {
     if (callClear(ctx, handle) != r4os.abi.service_api_result_ok) return fail(ctx, "final-clear");
     if (!callInfo(ctx, handle, &info) or info.length != 0) return fail(ctx, "final-info");
 
+    // The real service client also verifies inherited worker ownership. The
+    // stack context stays live until the generation-bound join completes.
+    var worker_context = SelfTestWorker{ .sys = ctx.*, .handle = handle };
+    var worker = r4os.abi.ProgramJoinHandle{};
+    if (ctx.threadCreateHandle(selfTestWorker, @intFromPtr(&worker_context), 0, 0, &worker) != r4os.abi.thread_ok)
+        return fail(ctx, "worker-create");
+    var worker_result: i32 = -1;
+    if (ctx.threadHandleJoin(&worker, ~@as(u64, 0), &worker_result) != r4os.abi.thread_ok or worker_result != 0)
+        return fail(ctx, "worker-join-ipc");
     ctx.println("CLIPSVC selftest: OK");
     return 0;
 }
@@ -336,4 +345,11 @@ fn readLe32(data: []const u8) u32 {
         (@as(u32, data[1]) << 8) |
         (@as(u32, data[2]) << 16) |
         (@as(u32, data[3]) << 24);
+}
+
+const SelfTestWorker = struct { sys: r4os.r4sys.Context, handle: u32 };
+fn selfTestWorker(raw: u64) callconv(.c) i32 {
+    const context: *const SelfTestWorker = @ptrFromInt(raw);
+    var info = r4os.abi.ClipboardInfo{};
+    return if (callInfo(&context.sys, context.handle, &info) and info.length == 0) 0 else 1;
 }
