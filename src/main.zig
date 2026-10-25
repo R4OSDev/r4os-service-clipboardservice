@@ -8,6 +8,7 @@ const clipboard_buffer_size: usize = @as(usize, r4os.clipboard.max_text_bytes) +
 const info_payload_size: usize = 16;
 
 const ClipboardState = struct {
+    desktop: ?r4os.r4desk.Context = null,
     text: [clipboard_buffer_size]u8 = .{0} ** clipboard_buffer_size,
     len: usize = 0,
     revision: u32 = 0,
@@ -23,11 +24,12 @@ pub fn r4_app_main(r4_app: *r4os.App) i32 {
     var ctx = r4_app.system();
     if (hasArg(ctx.argsRaw(), selftest_arg)) return runSelfTest(&ctx);
     if (hasArg(ctx.argsRaw(), ping_arg)) return runPing(&ctx);
-    return runService(&ctx);
+    return runService(&ctx, r4_app.desktop() orelse return r4os.abi.err_no_group);
 }
 
-fn runService(ctx: *const r4os.r4sys.Context) i32 {
+fn runService(ctx: *const r4os.r4sys.Context, desktop: r4os.r4desk.Context) i32 {
     if (!ctx.hasFn("service_call")) return r4os.abi.service_api_result_invalid;
+    if (!desktop.hasFn("gui_activity_notify")) return r4os.abi.err_no_fn;
 
     var info: r4os.abi.ServiceInfo = .{};
     var handle: u32 = 0;
@@ -48,27 +50,31 @@ fn runService(ctx: *const r4os.r4sys.Context) i32 {
         return r4os.abi.service_api_result_no_endpoint;
     }
 
-    var state: ClipboardState = .{};
+    var state: ClipboardState = .{ .desktop = desktop };
+    // Both provider replacement and committed mutations must reach sleeping
+    // subscribers; a caller cannot infer them from unrelated mouse activity.
+    _ = desktop.guiActivityNotify(r4os.abi.gui_activity_shared_clipboard);
+    defer {
+        _ = ctx.serviceEndpointUnregister(handle);
+        _ = desktop.guiActivityNotify(r4os.abi.gui_activity_shared_clipboard);
+    }
     var service_loop = r4os.ServiceLoop.init(ctx.*, handle, .{});
     while (true) {
         switch (service_loop.wait(null)) {
             .requests => |pending| {
                 const rc = service_loop.drain(pending, handleRequest, .{ ctx, handle, &state });
                 if (rc >= 0) continue;
-                _ = ctx.serviceEndpointUnregister(handle);
                 return rc;
             },
             .idle, .deadline => {},
             .stop => break,
             .failure => |raw| {
-                _ = ctx.serviceEndpointUnregister(handle);
                 return raw;
             },
         }
     }
 
     service_loop.report(service_name);
-    _ = ctx.serviceEndpointUnregister(handle);
     ctx.println("CLIPSVC stopped cleanly");
     return 0;
 }
@@ -109,6 +115,7 @@ fn handleWrite(ctx: *const r4os.r4sys.Context, handle: u32, request_id: u32, sta
     state.len = payload.len;
     bumpRevision(state);
     state.writes +%= 1;
+    if (state.desktop) |desk| _ = desk.guiActivityNotify(r4os.abi.gui_activity_shared_clipboard);
     return r4os.app_services.replyIfPending(ctx.*, handle, request_id, @intCast(payload.len), "");
 }
 
@@ -128,6 +135,7 @@ fn handleClear(ctx: *const r4os.r4sys.Context, handle: u32, request_id: u32, sta
     clearState(state);
     bumpRevision(state);
     state.clears +%= 1;
+    if (state.desktop) |desk| _ = desk.guiActivityNotify(r4os.abi.gui_activity_shared_clipboard);
     return r4os.app_services.replyIfPending(ctx.*, handle, request_id, r4os.abi.service_api_result_ok, "");
 }
 
