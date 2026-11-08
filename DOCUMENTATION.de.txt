@@ -16,13 +16,37 @@ Build aus dem Repository `Repositories/Services/ClipboardService`:
 Die Starter loesen Toolchain und lokale SDK-Abhaengigkeiten ueber
 `Settings.R4S` auf. Das Ergebnis liegt im Repository unter:
 
-    zig-out/CLIPSVC.R4X
+    Artifacts/Modules/ClipboardService/CLIPSVC.R4X (Workspace)
 
 Contract:
 - App-Einstieg: `r4_app_main`; `ENTRY_MODE=app` erzeugt den SDK-Startwrapper.
 - App-Klasse: `service`
 - Eingebaute Plattform-API: `R4SYS:Query:1`
+- Weitere vorhandene Plattform-API: `R4DESK:Query:1`
 - Service-Name: `CLIPSVC`
 - Standardargumente: `/RUN`
 - Zielpfad im Image: `C:\R4OS\SERVICES\CLIPSVC.R4X`
+
+0.1.7: kopierte typisierte Angebote
+----------------------------------
+src/offers.zig gehoert demselben urspruenglichen Endpointloop. Es besitzt
+alle Daten, Stages, Commitbelege und Snapshotpins; keine zweite Registry
+und keine Kernelkonversion. src/main.zig validiert feste Wireformen und
+benutzt bestehendes synchrones Request/Reply sowie Clipboardaktivitaet.
+Der alte Textpfad bleibt byteorientiert und akzeptiert weiter ungueltiges
+UTF8 ohne NUL. Die neue Textdarstellung ist ausdruecklich striktes UTF8.
+
+Normativ: Repositories/Contract/API/ClipboardOffers.txt. Dort stehen alle
+Formate, Budgets, Provider-/Offerrevisionen, feste30Sekundenleases, Chunk-
+und Retryregeln. Release kann einen Snapshot oder fertigen Commitbeleg
+freigeben; Abort betrifft nur private Schreibvorgaenge. Current ueberlebt
+Producerende und Belegablauf. Providerneustart verwirft alte Tokens.
+
+./Build.sh test baut den Dienst und prueft8gezielte Faelle am echten Owner:
+Atomaritaet/Snapshots, Prefixretry/Abbruch/Revisionskonflikt, Kapazitaet/
+Providerwechsel, Formate, Legacybytes/Fallback, Clock-/Countergrenzen,
+Allokationsfehler und globale Datenpins/Legacyreserve. Kontrollierte Host-
+Zeit und Failallocator sind keine nativen IPC-/SMP-/GUI-Nachweise.
+Die unveraenderte /SELFTEST-Aufrufkette bleibt fuer Altbinaervergleiche
+erhalten. Verbraucher und Copy/Pasteoberflaechen werden nicht migriert.
 

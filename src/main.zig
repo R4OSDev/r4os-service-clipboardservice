@@ -1,4 +1,7 @@
 const r4os = @import("r4os");
+const std = @import("std");
+const offers = @import("offers.zig");
+const abi = r4os.abi;
 
 const service_name = "CLIPSVC";
 const selftest_arg = "/SELFTEST";
@@ -9,9 +12,7 @@ const info_payload_size: usize = 16;
 
 const ClipboardState = struct {
     desktop: ?r4os.r4desk.Context = null,
-    text: [clipboard_buffer_size]u8 = .{0} ** clipboard_buffer_size,
-    len: usize = 0,
-    revision: u32 = 0,
+    offers: offers.Store,
     requests: u32 = 0,
     writes: u32 = 0,
     reads: u32 = 0,
@@ -50,7 +51,13 @@ fn runService(ctx: *const r4os.r4sys.Context, desktop: r4os.r4desk.Context) i32 
         return r4os.abi.service_api_result_no_endpoint;
     }
 
-    var state: ClipboardState = .{ .desktop = desktop };
+    // Canonical boot-unique process generation, not a clock/PID approximation.
+    const bundle = ctx.base.bundle orelse return r4os.abi.err_no_group;
+    const instance = std.math.cast(u32, bundle.raw.instance_id) orelse return r4os.abi.service_api_result_invalid;
+    var process: abi.ProgramProcessHandle = .{};
+    if (ctx.programOpenHandle(instance, &process) != 0 or process.generation == 0) return r4os.abi.err_no_fn;
+    var state: ClipboardState = .{ .desktop = desktop, .offers = offers.Store.init(ctx.allocator(), process.generation) };
+    defer state.offers.deinit();
     // Both provider replacement and committed mutations must reach sleeping
     // subscribers; a caller cannot infer them from unrelated mouse activity.
     _ = desktop.guiActivityNotify(r4os.abi.gui_activity_shared_clipboard);
@@ -87,6 +94,20 @@ fn handleRequest(ctx: *const r4os.r4sys.Context, handle: u32, state: *ClipboardS
     if (got == 0 and header.magic != r4os.abi.service_api_magic) return 0;
 
     state.requests +%= 1;
+    var clock_info: abi.MonotonicClockInfo = .{};
+    var clock_ok = false;
+    if (ctx.monotonicClock(&clock_info) > 0) {
+        if (r4os.time_contract.checked.ClockSample.fromInfo(clock_info)) |sample| {
+            state.offers.advance(sample) catch {};
+            clock_ok = state.offers.sample != null;
+        } else |_| {}
+    }
+    if (!clock_ok) state.offers.invalidateLeases();
+    if (header.op >= abi.clipboard_offer_op_info and header.op <= abi.clipboard_offer_op_status) {
+        if (!clock_ok) return r4os.app_services.replyIfPending(ctx.*, handle, header.request_id, abi.clipboard_offer_error_unsupported, "");
+        return handleTyped(ctx, handle, header.request_id, state, header.op, payload[0..@intCast(got)]) catch |err|
+            r4os.app_services.replyIfPending(ctx.*, handle, header.request_id, offers.code(err), "");
+    }
     const payload_len: usize = @intCast(got);
     return switch (header.op) {
         r4os.abi.clipboard_service_op_write => handleWrite(ctx, handle, header.request_id, state, payload[0..payload_len]),
@@ -102,18 +123,14 @@ fn handleRequest(ctx: *const r4os.r4sys.Context, handle: u32, state: *ClipboardS
 }
 
 fn handleWrite(ctx: *const r4os.r4sys.Context, handle: u32, request_id: u32, state: *ClipboardState, payload: []const u8) i32 {
-    if (payload.len > @as(usize, r4os.clipboard.max_text_bytes)) {
-        return r4os.app_services.replyIfPending(ctx.*, handle, request_id, r4os.abi.clipboard_error_too_large, "");
-    }
-    var i: usize = 0;
-    while (i < payload.len) : (i += 1) {
-        if (payload[i] == 0) return r4os.app_services.replyIfPending(ctx.*, handle, request_id, r4os.abi.clipboard_error_invalid, "");
-    }
-    if (payload.len > 0) @memcpy(state.text[0..payload.len], payload);
-    state.text[payload.len] = 0;
-    if (payload.len + 1 < state.text.len) @memset(state.text[payload.len + 1 ..], 0);
-    state.len = payload.len;
-    bumpRevision(state);
+    state.offers.legacyWrite(payload) catch |err| {
+        const code: i32 = switch (err) {
+            error.TooLarge => abi.clipboard_error_too_large,
+            error.Invalid => abi.clipboard_error_invalid,
+            else => abi.service_api_result_busy,
+        };
+        return r4os.app_services.replyIfPending(ctx.*, handle, request_id, code, "");
+    };
     state.writes +%= 1;
     if (state.desktop) |desk| _ = desk.guiActivityNotify(r4os.abi.gui_activity_shared_clipboard);
     return r4os.app_services.replyIfPending(ctx.*, handle, request_id, @intCast(payload.len), "");
@@ -121,7 +138,8 @@ fn handleWrite(ctx: *const r4os.r4sys.Context, handle: u32, request_id: u32, sta
 
 fn handleRead(ctx: *const r4os.r4sys.Context, handle: u32, request_id: u32, state: *ClipboardState) i32 {
     state.reads +%= 1;
-    return r4os.app_services.replyIfPending(ctx.*, handle, request_id, @intCast(state.len), state.text[0..state.len]);
+    const text = state.offers.legacyText();
+    return r4os.app_services.replyIfPending(ctx.*, handle, request_id, @intCast(text.len), text);
 }
 
 fn handleInfo(ctx: *const r4os.r4sys.Context, handle: u32, request_id: u32, state: *ClipboardState) i32 {
@@ -132,8 +150,7 @@ fn handleInfo(ctx: *const r4os.r4sys.Context, handle: u32, request_id: u32, stat
 }
 
 fn handleClear(ctx: *const r4os.r4sys.Context, handle: u32, request_id: u32, state: *ClipboardState) i32 {
-    clearState(state);
-    bumpRevision(state);
+    state.offers.legacyClear() catch return r4os.app_services.replyIfPending(ctx.*, handle, request_id, abi.service_api_result_busy, "");
     state.clears +%= 1;
     if (state.desktop) |desk| _ = desk.guiActivityNotify(r4os.abi.gui_activity_shared_clipboard);
     return r4os.app_services.replyIfPending(ctx.*, handle, request_id, r4os.abi.service_api_result_ok, "");
@@ -141,8 +158,71 @@ fn handleClear(ctx: *const r4os.r4sys.Context, handle: u32, request_id: u32, sta
 
 fn handleRevision(ctx: *const r4os.r4sys.Context, handle: u32, request_id: u32, state: *ClipboardState) i32 {
     var payload: [4]u8 = .{0} ** 4;
-    writeLe32(payload[0..], state.revision);
+    writeLe32(payload[0..], state.offers.legacy_revision);
     return r4os.app_services.replyIfPending(ctx.*, handle, request_id, r4os.abi.service_api_result_ok, payload[0..]);
+}
+
+fn parse(comptime T: type, bytes: []const u8) offers.Error!T {
+    if (bytes.len != @sizeOf(T)) return error.Invalid;
+    const value = std.mem.bytesToValue(T, bytes);
+    if (value.version != 1 or value.size != @sizeOf(T)) return error.Invalid;
+    return value;
+}
+fn token(bytes: []const u8) offers.Error!abi.ClipboardOfferLease {
+    const value = try parse(abi.ClipboardOfferLease, bytes);
+    if (value.revision != 0 or value.expires_ns != 0 or value.state != 0 or value.reserved != 0) return error.Invalid;
+    return value;
+}
+fn respond(ctx: *const r4os.r4sys.Context, handle: u32, request: u32, value: anytype) i32 {
+    return r4os.app_services.replyIfPending(ctx.*, handle, request, 0, std.mem.asBytes(&value));
+}
+fn handleTyped(ctx: *const r4os.r4sys.Context, handle: u32, request: u32, state: *ClipboardState, op: u16, bytes: []const u8) offers.Error!i32 {
+    const store = &state.offers;
+    switch (op) {
+        abi.clipboard_offer_op_info => {
+            if (bytes.len != 0) return error.Invalid;
+            return respond(ctx, handle, request, store.info());
+        },
+        abi.clipboard_offer_op_begin => return respond(ctx, handle, request, try store.begin(try parse(abi.ClipboardOfferBegin, bytes))),
+        abi.clipboard_offer_op_declare => try store.declare(try parse(abi.ClipboardOfferTransfer, bytes)),
+        abi.clipboard_offer_op_put => {
+            if (bytes.len < @sizeOf(abi.ClipboardOfferTransfer)) return error.Invalid;
+            try store.put(try parse(abi.ClipboardOfferTransfer, bytes[0..@sizeOf(abi.ClipboardOfferTransfer)]), bytes[@sizeOf(abi.ClipboardOfferTransfer)..]);
+        },
+        abi.clipboard_offer_op_commit => {
+            const before = store.revision;
+            const result = try store.commit(try token(bytes));
+            if (before != store.revision) if (state.desktop) |desk| {
+                _ = desk.guiActivityNotify(abi.gui_activity_shared_clipboard);
+            };
+            return respond(ctx, handle, request, result);
+        },
+        abi.clipboard_offer_op_abort => try store.abort(try token(bytes)),
+        abi.clipboard_offer_op_snapshot => {
+            if (bytes.len != 0) return error.Invalid;
+            return respond(ctx, handle, request, try store.acquire());
+        },
+        abi.clipboard_offer_op_enumerate => {
+            var formats: [abi.clipboard_offer_max_formats]abi.ClipboardOfferFormat = undefined;
+            const page = try store.enumerate(try parse(abi.ClipboardOfferEnumerate, bytes), &formats);
+            var response: [4096]u8 = undefined;
+            const tail = std.mem.sliceAsBytes(formats[0..page.count]);
+            @memcpy(response[0..@sizeOf(abi.ClipboardOfferPage)], std.mem.asBytes(&page));
+            @memcpy(response[@sizeOf(abi.ClipboardOfferPage)..][0..tail.len], tail);
+            return r4os.app_services.replyIfPending(ctx.*, handle, request, 0, response[0 .. @sizeOf(abi.ClipboardOfferPage) + tail.len]);
+        },
+        abi.clipboard_offer_op_read => {
+            const result = try store.read(try parse(abi.ClipboardOfferTransfer, bytes));
+            var response: [4096]u8 = undefined;
+            @memcpy(response[0..@sizeOf(abi.ClipboardOfferChunk)], std.mem.asBytes(&result.header));
+            @memcpy(response[@sizeOf(abi.ClipboardOfferChunk)..][0..result.bytes.len], result.bytes);
+            return r4os.app_services.replyIfPending(ctx.*, handle, request, 0, response[0 .. @sizeOf(abi.ClipboardOfferChunk) + result.bytes.len]);
+        },
+        abi.clipboard_offer_op_release => try store.release(try token(bytes)),
+        abi.clipboard_offer_op_status => return respond(ctx, handle, request, try store.status(try token(bytes))),
+        else => return error.Unsupported,
+    }
+    return r4os.app_services.replyIfPending(ctx.*, handle, request, 0, "");
 }
 
 fn runPing(ctx: *const r4os.r4sys.Context) i32 {
@@ -277,9 +357,10 @@ fn callClear(ctx: *const r4os.r4sys.Context, handle: u32) i32 {
 
 fn writeInfoPayload(out: []u8, state: *const ClipboardState) void {
     writeLe32(out[0..4], r4os.clipboard.max_text_bytes);
-    writeLe32(out[4..8], @intCast(state.len));
-    writeLe32(out[8..12], state.revision);
-    writeLe32(out[12..16], r4os.abi.clipboard_flag_text | (if (state.len > 0) r4os.abi.clipboard_flag_has_text else 0));
+    const text = state.offers.legacyText();
+    writeLe32(out[4..8], @intCast(text.len));
+    writeLe32(out[8..12], state.offers.legacy_revision);
+    writeLe32(out[12..16], r4os.abi.clipboard_flag_text | (if (text.len > 0) r4os.abi.clipboard_flag_has_text else 0));
 }
 
 fn parseInfoPayload(data: []const u8) r4os.abi.ClipboardInfo {
@@ -289,16 +370,6 @@ fn parseInfoPayload(data: []const u8) r4os.abi.ClipboardInfo {
         .revision = readLe32(data[8..12]),
         .flags = readLe32(data[12..16]),
     };
-}
-
-fn clearState(state: *ClipboardState) void {
-    @memset(state.text[0..], 0);
-    state.len = 0;
-}
-
-fn bumpRevision(state: *ClipboardState) void {
-    state.revision +%= 1;
-    if (state.revision == 0) state.revision = 1;
 }
 
 fn fail(ctx: *const r4os.r4sys.Context, label: []const u8) i32 {

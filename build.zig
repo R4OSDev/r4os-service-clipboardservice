@@ -10,4 +10,13 @@ pub fn build(b: *std.Build) void {
     const sdk_dep = b.dependencyFromBuildZig(sdk_build, .{});
     const sdk = sdk_build.sdk(b, sdk_dep, .{});
     _ = sdk.addR4MF(b.path("module.R4MF"));
+    const tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/offers_tests.zig"),
+        .target = b.graph.host,
+        .optimize = .ReleaseSafe,
+    }) });
+    tests.root_module.addImport("r4os", sdk.createR4osModule(b.graph.host, .ReleaseSafe));
+    const step = b.step("test", "Check the actual copied clipboard owner and build CLIPSVC");
+    step.dependOn(&b.addRunArtifact(tests).step);
+    step.dependOn(b.getInstallStep());
 }

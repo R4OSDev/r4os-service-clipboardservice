@@ -4,7 +4,7 @@
 
 ## Package
 
-- Version: `0.1.2`
+- Version: `0.1.7`
 - Image target: `/R4OS/SERVICES/CLIPSVC.R4X`
 - Image scope: `slim`
 - Canonical project manifest: `module.R4MF`
@@ -18,7 +18,7 @@ On Windows:
 
     Build.bat
 
-On Linux or macOS:
+On Linux:
 
     ./Build.sh
 
@@ -43,3 +43,10 @@ CLIPSVC 0.1.4 declares `runtime.parallel=owned-v1`: its endpoint loop owns
 its clipboard state, while the kernel owns request/reply/stop lifetime.
 The existing `/SELFTEST` also creates and joins a worker that reads service
 metadata over IPC; worker threads inherit the background instance policy.
+
+Version0.1.7 adds copied typed offers with private staging, atomic commit,
+immutable snapshots, bounded chunk transfer and fixed leases. The existing
+text operations and ServiceLoop remain. Protocol and format truth belongs to
+`Contract/API/ClipboardOffers.txt`; the service owns all copied data after
+producer exit. `./Build.sh test` runs eight focused tests against this owner
+and builds the actual service. Host tests do not qualify native IPC or GUI.
