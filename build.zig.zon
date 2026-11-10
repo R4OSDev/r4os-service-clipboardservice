@@ -1,12 +1,12 @@
 .{
     .name = .r4os_clipsvc,
-    .version = "0.1.7",
+    .version = "0.1.8",
     .fingerprint = 0x8fcfb47fc0d35792,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .r4os_sdk = .{
-            .url = "https://github.com/R4OSDev/r4os-sdk/archive/2262a95a0ced913609bda76756286ec8e7f3bc38.tar.gz",
-            .hash = "r4os_sdk-0.64.173-NnPzAmUY_QF3JQAUR2tPiPy_kUF2Ofvz2uS8nQbJ_MkB",
+            .url = "https://github.com/R4OSDev/r4os-sdk/archive/f31fa6e282b4c34c42dea20c84c5ee5d0f425cf0.tar.gz",
+            .hash = "r4os_sdk-0.64.196-NnPzAsRwCwIPAIyyevn9P6T7KjkmwskQVfnzPTC1Vcfp",
         },
     },
     .paths = .{

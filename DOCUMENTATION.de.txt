@@ -21,8 +21,8 @@ Die Starter loesen Toolchain und lokale SDK-Abhaengigkeiten ueber
 Contract:
 - App-Einstieg: `r4_app_main`; `ENTRY_MODE=app` erzeugt den SDK-Startwrapper.
 - App-Klasse: `service`
-- Eingebaute Plattform-API: `R4SYS:Query:1`
-- Weitere vorhandene Plattform-API: `R4DESK:Query:1`
+- Eingebaute Plattform-API: `R4SYS:Query2:2`
+- Weitere vorhandene Plattform-API: `R4DESK:Query2:2`
 - Service-Name: `CLIPSVC`
 - Standardargumente: `/RUN`
 - Zielpfad im Image: `C:\R4OS\SERVICES\CLIPSVC.R4X`
@@ -50,3 +50,14 @@ Zeit und Failallocator sind keine nativen IPC-/SMP-/GUI-Nachweise.
 Die unveraenderte /SELFTEST-Aufrufkette bleibt fuer Altbinaervergleiche
 erhalten. Verbraucher und Copy/Pasteoberflaechen werden nicht migriert.
 
+Anschluss Generation2 (0.90.59)
+------------------------------
+Normale SDK196-Auswahl: SDK_PROFILE=r4os-zig-generation2, App2/R4XStart2 und
+Query2:2 fuer Plattformimporte. Unabhaengige R4STD-Interfaces behalten ihren
+eigenen Vertrag. Registrierung verwendet ein gemeinsames100Tick-Budget
+mit wirklicher Clock statt eines pro Versuch erneuerten Iterationsbudgets.
+
+CLIPSVC bindet seine kanonische Prozessgeneration direkt an den wirklichen App2-Startkontext. Angebote, Leases und alte Textansicht bleiben beim bestehenden Offerbesitzer. Commit und Providerwechsel werden vor Aktivitaetsnotify publiziert; Reads/Staging/Replays erzeugen keinen falschen Wake. Die Dienstwarteschleife ist der gemeinsame ServiceLoop auf Generation2.
+
+Build ueber ./Build.sh beziehungsweise Build.bat; beide verwenden dieselbe
+PowerShell7-Logik. Version, Klasse, Ziel und Imports stehen in module.R4MF.

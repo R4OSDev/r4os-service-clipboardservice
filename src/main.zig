@@ -21,21 +21,24 @@ const ClipboardState = struct {
     bad_ops: u32 = 0,
 };
 
-pub fn r4_app_main(r4_app: *r4os.App) i32 {
+pub fn r4_app_main(r4_app: *r4os.App2) i32 {
     var ctx = r4_app.system();
     if (hasArg(ctx.argsRaw(), selftest_arg)) return runSelfTest(&ctx);
     if (hasArg(ctx.argsRaw(), ping_arg)) return runPing(&ctx);
-    return runService(&ctx, r4_app.desktop() orelse return r4os.abi.err_no_group);
+    return runService(&ctx, r4_app.desktop() orelse return r4os.abi.err_no_group, r4_app.raw.instance_id);
 }
 
-fn runService(ctx: *const r4os.r4sys.Context, desktop: r4os.r4desk.Context) i32 {
+fn runService(ctx: *const r4os.r4sys.Context, desktop: r4os.r4desk.Context, instance_id: u64) i32 {
     if (!ctx.hasFn("service_call")) return r4os.abi.service_api_result_invalid;
     if (!desktop.hasFn("gui_activity_notify")) return r4os.abi.err_no_fn;
 
     var info: r4os.abi.ServiceInfo = .{};
     var handle: u32 = 0;
-    var waited: u32 = 0;
-    while (waited < 100 and handle == 0) : (waited += 1) {
+    const actual = ctx.base.generation2 orelse return r4os.abi.err_no_group;
+    const clock = r4os.inventory_reader.PlatformClock.fromContext2(actual) catch return r4os.abi.err_no_fn;
+    var registration_budget = r4os.rpc_budget.Budget.fromTicks(clock.read, 100) catch |err| return r4os.rpc_budget.code(err);
+    while (handle == 0 and !ctx.programShouldClose()) {
+        _ = registration_budget.remainingTicks() catch break;
         const rc = ctx.serviceEndpointRegister(service_name, 0, &info);
         if (rc == r4os.abi.service_api_result_ok and info.handle != 0) {
             handle = info.handle;
@@ -52,8 +55,7 @@ fn runService(ctx: *const r4os.r4sys.Context, desktop: r4os.r4desk.Context) i32 
     }
 
     // Canonical boot-unique process generation, not a clock/PID approximation.
-    const bundle = ctx.base.bundle orelse return r4os.abi.err_no_group;
-    const instance = std.math.cast(u32, bundle.raw.instance_id) orelse return r4os.abi.service_api_result_invalid;
+    const instance = std.math.cast(u32, instance_id) orelse return r4os.abi.service_api_result_invalid;
     var process: abi.ProgramProcessHandle = .{};
     if (ctx.programOpenHandle(instance, &process) != 0 or process.generation == 0) return r4os.abi.err_no_fn;
     var state: ClipboardState = .{ .desktop = desktop, .offers = offers.Store.init(ctx.allocator(), process.generation) };
